@@ -1,17 +1,17 @@
 #!/bin/bash
-# ============================================
-# ai.xem8k5.top 自动签到脚本 (GitHub Actions)
-# 凭据从环境变量读取，不硬编码密码
-# ============================================
 
 SITE="${SITE_URL:-https://ai.xem8k5.top}"
 USERNAME="${CHECKIN_USERNAME}"
 PASSWORD="${CHECKIN_PASSWORD}"
 COOKIE_FILE="/tmp/checkin_cookies.txt"
 
+if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+    echo "❌ 缺少 CHECKIN_USERNAME 或 CHECKIN_PASSWORD"
+    exit 1
+fi
+
 echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] === 开始签到流程 ==="
 
-# Step 1: 登录获取 session
 LOGIN_RESP=$(curl -sL -c "$COOKIE_FILE" \
     -X POST "$SITE/api/user/login" \
     -H "Content-Type: application/json" \
@@ -25,9 +25,18 @@ if [ -z "$SUCCESS" ]; then
     exit 1
 fi
 
+if [ -z "$USER_ID" ]; then
+    echo "❌ 登录成功但未获取到用户ID: $LOGIN_RESP"
+    exit 1
+fi
+
+if [ ! -s "$COOKIE_FILE" ]; then
+    echo "❌ 登录成功但未写入会话 Cookie"
+    exit 1
+fi
+
 echo "✅ 登录成功, 用户ID: $USER_ID"
 
-# Step 2: 签到
 CHECKIN_RESP=$(curl -sL -b "$COOKIE_FILE" \
     -X POST "$SITE/api/user/checkin" \
     -H "Content-Type: application/json" \
@@ -35,17 +44,22 @@ CHECKIN_RESP=$(curl -sL -b "$COOKIE_FILE" \
 
 echo "签到响应: $CHECKIN_RESP"
 
-# Step 3: 检查结果
-if echo "$CHECKIN_RESP" | grep -q '"success":true'; then
+TODAY=$(date +%F)
+MONTH=$(date +%Y-%m)
+STATUS_RESP=$(curl -sL -b "$COOKIE_FILE" \
+    -X GET "$SITE/api/user/checkin?month=$MONTH" \
+    -H "New-Api-User: $USER_ID" 2>&1)
+
+if echo "$CHECKIN_RESP" | grep -q '"success":true' && echo "$STATUS_RESP" | grep -q "\"checkin_date\":\"$TODAY\""; then
     echo "🎉 签到成功！"
 elif echo "$CHECKIN_RESP" | grep -q '今日已签到'; then
     echo "📅 今日已签到过"
 else
-    echo "⚠️ 签到异常: $CHECKIN_RESP"
+    echo "❌ 签到异常: $CHECKIN_RESP"
+    echo "❌ 状态校验: $STATUS_RESP"
     exit 1
 fi
 
 echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] === 签到流程结束 ==="
 
-# 清理
 rm -f "$COOKIE_FILE"
