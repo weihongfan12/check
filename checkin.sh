@@ -1,26 +1,104 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -u
 
 SITE="${SITE_URL:-https://ai.xem8k5.top}"
-USERNAME="${CHECKIN_USERNAME}"
-PASSWORD="${CHECKIN_PASSWORD}"
-COOKIE_FILE="/tmp/checkin_cookies.txt"
+USERNAME="${CHECKIN_USERNAME:-}"
+PASSWORD="${CHECKIN_PASSWORD:-}"
+COOKIE_FILE="${RUNNER_TEMP:-/tmp}/checkin_cookies.txt"
+
+log() {
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] $*"
+}
+
+json_get() {
+    python3 -c 'import json,sys
+path=sys.argv[1]
+try:
+    data=json.load(sys.stdin)
+    cur=data
+    for p in path.split("."):
+        if p == "":
+            continue
+        if isinstance(cur, dict):
+            cur=cur.get(p)
+        else:
+            cur=None
+            break
+    if cur is None:
+        sys.exit(1)
+    if isinstance(cur, bool):
+        print(str(cur).lower())
+    else:
+        print(cur)
+except Exception:
+    sys.exit(1)' "$1"
+}
+
+check_status() {
+    local month="$1"
+    curl -sS -L -b "$COOKIE_FILE" \
+        -H "Accept: application/json" \
+        -H "New-API-User: $USER_ID" \
+        ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+        "$SITE/api/user/checkin?month=$month" 2>&1
+}
+
+verify_checked_today() {
+    local status_resp="$1"
+    local today_cst
+    today_cst=$(TZ=Asia/Shanghai date +%F)
+
+    STATUS_RESP="$status_resp" python3 - "$today_cst" <<'PY'
+import json, os, sys
+
+today = sys.argv[1]
+text = os.environ.get("STATUS_RESP", "")
+try:
+    obj = json.loads(text)
+except Exception:
+    print("invalid_json")
+    sys.exit(2)
+
+if not obj.get("success"):
+    print("status_api_failed")
+    sys.exit(3)
+
+data = obj.get("data") or {}
+stats = data.get("stats") or {}
+records = stats.get("records") or []
+checked = bool(stats.get("checked_in_today"))
+has_record = any((r or {}).get("checkin_date") == today for r in records)
+
+if checked or has_record:
+    print("checked")
+    sys.exit(0)
+
+print("not_checked")
+sys.exit(1)
+PY
+}
 
 if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
     echo "❌ 缺少 CHECKIN_USERNAME 或 CHECKIN_PASSWORD"
     exit 1
 fi
 
-echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] === 开始签到流程 ==="
+rm -f "$COOKIE_FILE"
+log "=== 开始签到流程 ==="
+log "站点: $SITE"
+log "北京时间日期: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')"
 
-LOGIN_RESP=$(curl -sL -c "$COOKIE_FILE" \
+LOGIN_RESP=$(curl -sS -L -c "$COOKIE_FILE" \
     -X POST "$SITE/api/user/login" \
     -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
     -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" 2>&1)
 
-SUCCESS=$(echo "$LOGIN_RESP" | grep -o '"success":true')
-USER_ID=$(echo "$LOGIN_RESP" | grep -oP '"id":\K[0-9]+')
+SUCCESS=$(echo "$LOGIN_RESP" | json_get 'success' 2>/dev/null || true)
+USER_ID=$(echo "$LOGIN_RESP" | json_get 'data.id' 2>/dev/null || true)
+TOKEN=$(echo "$LOGIN_RESP" | json_get 'data.token' 2>/dev/null || true)
 
-if [ -z "$SUCCESS" ]; then
+if [ "$SUCCESS" != "true" ]; then
     echo "❌ 登录失败: $LOGIN_RESP"
     exit 1
 fi
@@ -30,36 +108,60 @@ if [ -z "$USER_ID" ]; then
     exit 1
 fi
 
-if [ ! -s "$COOKIE_FILE" ]; then
-    echo "❌ 登录成功但未写入会话 Cookie"
-    exit 1
+AUTH_HEADER=""
+if [ -n "$TOKEN" ]; then
+    AUTH_HEADER="Authorization: Bearer $TOKEN"
 fi
 
 echo "✅ 登录成功, 用户ID: $USER_ID"
+if [ -n "$TOKEN" ]; then
+    echo "✅ 已获取 token，将同时使用 Authorization + Cookie + New-API-User"
+else
+    echo "ℹ️ 登录响应没有 token，将使用 Cookie + New-API-User"
+fi
 
-CHECKIN_RESP=$(curl -sL -b "$COOKIE_FILE" \
+MONTH=$(TZ=Asia/Shanghai date +%Y-%m)
+STATUS_BEFORE=$(check_status "$MONTH")
+echo "签到前状态: $STATUS_BEFORE"
+
+VERIFY_BEFORE=$(verify_checked_today "$STATUS_BEFORE" || true)
+if [ "$VERIFY_BEFORE" = "checked" ]; then
+    echo "📅 状态接口确认：今日已经签到"
+    log "=== 签到流程结束 ==="
+    rm -f "$COOKIE_FILE"
+    exit 0
+fi
+
+CHECKIN_RESP=$(curl -sS -L -b "$COOKIE_FILE" \
     -X POST "$SITE/api/user/checkin" \
     -H "Content-Type: application/json" \
-    -H "New-Api-User: $USER_ID" 2>&1)
+    -H "Accept: application/json" \
+    -H "New-API-User: $USER_ID" \
+    ${AUTH_HEADER:+-H "$AUTH_HEADER"} 2>&1)
 
 echo "签到响应: $CHECKIN_RESP"
 
-TODAY=$(date +%F)
-MONTH=$(date +%Y-%m)
-STATUS_RESP=$(curl -sL -b "$COOKIE_FILE" \
-    -X GET "$SITE/api/user/checkin?month=$MONTH" \
-    -H "New-Api-User: $USER_ID" 2>&1)
+STATUS_AFTER=$(check_status "$MONTH")
+echo "签到后状态: $STATUS_AFTER"
 
-if echo "$CHECKIN_RESP" | grep -q '"success":true' && echo "$STATUS_RESP" | grep -q "\"checkin_date\":\"$TODAY\""; then
-    echo "🎉 签到成功！"
-elif echo "$CHECKIN_RESP" | grep -q '今日已签到'; then
-    echo "📅 今日已签到过"
-else
-    echo "❌ 签到异常: $CHECKIN_RESP"
-    echo "❌ 状态校验: $STATUS_RESP"
-    exit 1
+VERIFY_AFTER=$(verify_checked_today "$STATUS_AFTER" || true)
+if [ "$VERIFY_AFTER" = "checked" ]; then
+    if echo "$CHECKIN_RESP" | grep -q '"success":true'; then
+        echo "🎉 签到成功，并已通过状态接口确认"
+    else
+        echo "📅 今日已签到，并已通过状态接口确认"
+    fi
+    log "=== 签到流程结束 ==="
+    rm -f "$COOKIE_FILE"
+    exit 0
 fi
 
-echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] === 签到流程结束 ==="
+if echo "$CHECKIN_RESP" | grep -qi 'Turnstile'; then
+    echo "❌ 签到失败：站点要求 Turnstile，人机验证无法用纯 GitHub Actions curl 绕过"
+else
+    echo "❌ 签到失败：接口响应未能让状态变为今日已签到"
+fi
 
+echo "❌ 状态校验结果: $VERIFY_AFTER"
 rm -f "$COOKIE_FILE"
+exit 1
