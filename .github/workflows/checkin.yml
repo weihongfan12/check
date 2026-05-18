@@ -13,8 +13,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 运行签到脚本
+      - name: 签到站点1 (ai.xem8k5.top)
         env:
           CHECKIN_USERNAME: ${{ secrets.CHECKIN_USERNAME }}
           CHECKIN_PASSWORD: ${{ secrets.CHECKIN_PASSWORD }}
         run: bash checkin.sh
+
+      - name: 签到站点2 (api.denxio.top)
+        env:
+          CHECKIN_USERNAME2: ${{ secrets.CHECKIN_USERNAME2 }}
+          CHECKIN_PASSWORD2: ${{ secrets.CHECKIN_PASSWORD2 }}
+        run: bash checkin2.sh

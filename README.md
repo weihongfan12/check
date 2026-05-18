@@ -1,60 +1,55 @@
 # 自动签到说明
 
-这个仓库通过 GitHub Actions 每天定时执行 `checkin.sh`。
+这个仓库通过 GitHub Actions 每天定时执行签到脚本，支持两个 New API 站点。
 
-## 当前触发时间
+## 签到站点
 
-工作流配置的是：
+| 站点 | 地址 | 脚本 | Secrets |
+|------|------|------|---------|
+| 站点1 | ai.xem8k5.top | checkin.sh | CHECKIN_USERNAME / CHECKIN_PASSWORD |
+| 站点2 | api.denxio.top | checkin2.sh | CHECKIN_USERNAME2 / CHECKIN_PASSWORD2 |
+
+## 触发时间
 
 ```yaml
 - cron: '0 0 * * *'
 ```
 
-GitHub Actions 的 `cron` 使用 UTC 时间，所以这表示：
-
 - UTC 时间：每天 `00:00`
 - 北京时间：每天 `08:00`
 
-也就是说，如果你是今天早上 8 点之前查看站点，还没签到是正常的。
+## GitHub Secrets 配置
 
-## 今天的运行情况
+在仓库 `Settings -> Secrets and variables -> Actions` 中设置：
 
-我核对到最近一次定时任务运行时间是：
+- `CHECKIN_USERNAME` — 站点1 登录邮箱
+- `CHECKIN_PASSWORD` — 站点1 密码
+- `CHECKIN_USERNAME2` — 站点2 登录邮箱
+- `CHECKIN_PASSWORD2` — 站点2 密码
 
-- `2026-05-17 02:00:01 UTC`
-- 对应北京时间 `2026-05-17 10:00:01`
+## 脚本工作流程
 
-并且 GitHub 记录这次工作流结论是 `success`。
+每个签到脚本执行以下步骤：
 
-这说明今天不是“完全没跑”，而是更可能出现了下面两种情况之一：
+1. 检查环境变量是否完整
+2. 登录获取 Cookie 和用户信息
+3. 查询签到前状态（今日是否已签到）
+4. 若未签到则调用签到接口
+5. 查询签到后状态，确认今日签到记录存在
+6. 若签到后仍未确认，脚本返回失败（避免 GitHub Actions 假成功）
 
-1. 你查看得比实际运行时间更早。
-2. 脚本把接口返回误判成成功，但站点实际没有完成签到。
+## 调试
 
-## 我这次做的修复
-
-我已经更新了 `checkin.sh`，新增了这些保护：
-
-- 检查 `CHECKIN_USERNAME` 和 `CHECKIN_PASSWORD` 是否为空
-- 登录后强制校验是否拿到了用户 ID
-- 登录后强制校验是否真的写入了会话 Cookie
-- 签到后再次查询当月签到状态，确认今天日期已经出现在签到记录中
-- 如果接口“看起来成功”但实际没签到，脚本会直接失败，避免 GitHub Actions 假成功
-
-## 你接下来要检查的地方
-
-1. 打开仓库的 GitHub Actions 页面，确认最近一次运行日志里 `签到响应` 和 `状态校验` 的输出。
-2. 打开仓库 `Settings -> Secrets and variables -> Actions`，确认：
-   - `CHECKIN_USERNAME`
-   - `CHECKIN_PASSWORD`
-3. 手动执行一次 `workflow_dispatch`，看新的脚本是否仍然报错。
+手动触发 workflow 后查看日志，搜索关键字：
+- `登录成功` / `登录失败`
+- `签到响应`
+- `签到后状态`
+- `签到成功` / `今日已签到` / `签到失败`
 
 ## 可选优化
 
-如果你想要“起床前就已经签到完”，可以把 cron 改早一点，比如北京时间 7 点：
-
+如果想要更早签到，修改 cron 时间：
 ```yaml
+# 北京时间 7:00
 - cron: '0 23 * * *'
 ```
-
-这代表每天 `23:00 UTC`，也就是北京时间次日 `07:00`。
