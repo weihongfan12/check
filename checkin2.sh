@@ -35,13 +35,6 @@ except Exception:
     sys.exit(1)' "$1"
 }
 
-make_login_body() {
-    USERNAME="$USERNAME" PASSWORD="$PASSWORD" python3 - <<'PY'
-import json, os
-print(json.dumps({"username": os.environ["USERNAME"], "password": os.environ["PASSWORD"]}, ensure_ascii=False))
-PY
-}
-
 curl_retry() {
     local attempt=1
     local max=3
@@ -61,57 +54,6 @@ curl_retry() {
     return 1
 }
 
-check_status() {
-    local month="$1"
-    if [ -n "${AUTH_HEADER:-}" ]; then
-        curl_retry -b "$COOKIE_FILE" \
-            -H "Accept: application/json" \
-            -H "New-API-User: $USER_ID" \
-            -H "$AUTH_HEADER" \
-            "$SITE/api/user/checkin?month=$month"
-    else
-        curl_retry -b "$COOKIE_FILE" \
-            -H "Accept: application/json" \
-            -H "New-API-User: $USER_ID" \
-            "$SITE/api/user/checkin?month=$month"
-    fi
-}
-
-verify_checked_today() {
-    local status_resp="$1"
-    local today_cst
-    today_cst=$(TZ=Asia/Shanghai date +%F)
-
-    STATUS_RESP="$status_resp" python3 - "$today_cst" <<'PY'
-import json, os, sys
-
-today = sys.argv[1]
-text = os.environ.get("STATUS_RESP", "")
-try:
-    obj = json.loads(text)
-except Exception:
-    print("invalid_json")
-    sys.exit(2)
-
-if not obj.get("success"):
-    print("status_api_failed")
-    sys.exit(3)
-
-data = obj.get("data") or {}
-stats = data.get("stats") or {}
-records = stats.get("records") or []
-checked = bool(stats.get("checked_in_today"))
-has_record = any((r or {}).get("checkin_date") == today for r in records)
-
-if checked or has_record:
-    print("checked")
-    sys.exit(0)
-
-print("not_checked")
-sys.exit(1)
-PY
-}
-
 if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
     echo "❌ [$SITE_LABEL] 缺少 CHECKIN_USERNAME2 或 CHECKIN_PASSWORD2"
     exit 1
@@ -122,89 +64,105 @@ log "=== 开始签到流程 ==="
 log "站点: $SITE"
 log "北京时间日期: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')"
 
-LOGIN_BODY=$(make_login_body)
+# Step 1: 登录 (POST /api/v1/auth/login)
+LOGIN_BODY=$(python3 -c "import json; print(json.dumps({'email': '$USERNAME', 'password': '$PASSWORD'}, ensure_ascii=False))")
 LOGIN_RESP=$(curl_retry -c "$COOKIE_FILE" \
-    -X POST "$SITE/api/user/login" \
+    -X POST "$SITE/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json" \
     -d "$LOGIN_BODY")
 
-SUCCESS=$(echo "$LOGIN_RESP" | json_get 'success' 2>/dev/null || true)
-USER_ID=$(echo "$LOGIN_RESP" | json_get 'data.id' 2>/dev/null || true)
+log "登录响应: $(echo "$LOGIN_RESP" | head -c 200)"
+
 TOKEN=$(echo "$LOGIN_RESP" | json_get 'data.token' 2>/dev/null || true)
+USER_ID=$(echo "$LOGIN_RESP" | json_get 'data.id' 2>/dev/null || true)
 
-if [ "$SUCCESS" != "true" ]; then
-    echo "❌ [$SITE_LABEL] 登录失败: $LOGIN_RESP"
+if [ -z "$TOKEN" ]; then
+    # 尝试其他可能的 token 字段名
+    TOKEN=$(echo "$LOGIN_RESP" | json_get 'data.access_token' 2>/dev/null || true)
+fi
+
+if [ -z "$TOKEN" ]; then
+    echo "❌ [$SITE_LABEL] 登录失败，未获取到 token: $LOGIN_RESP"
     exit 1
 fi
 
-if [ -z "$USER_ID" ]; then
-    echo "❌ [$SITE_LABEL] 登录成功但未获取到用户ID: $LOGIN_RESP"
-    exit 1
-fi
+log "✅ 登录成功, 用户ID: $USER_ID"
+AUTH_HEADER="Authorization: Bearer ${TOKEN}"
 
-AUTH_HEADER=""
-if [ -n "$TOKEN" ]; then
-    AUTH_HEADER="Authorization: Bearer $TOKEN"
-fi
+# Step 2: 检查签到状态 (GET /api/v1/tbe-sponsor-checkin/status)
+STATUS_RESP=$(curl_retry \
+    -H "Accept: application/json" \
+    -H "$AUTH_HEADER" \
+    "$SITE/api/v1/tbe-sponsor-checkin/status?timezone=Asia/Shanghai")
 
-echo "✅ [$SITE_LABEL] 登录成功, 用户ID: $USER_ID"
-if [ -n "$TOKEN" ]; then
-    echo "✅ [$SITE_LABEL] 已获取 token，将同时使用 Authorization + Cookie + New-API-User"
-else
-    echo "ℹ️ [$SITE_LABEL] 登录响应没有 token，将使用 Cookie + New-API-User"
-fi
+log "签到状态: $(echo "$STATUS_RESP" | head -c 300)"
 
-MONTH=$(TZ=Asia/Shanghai date +%Y-%m)
-STATUS_BEFORE=$(check_status "$MONTH")
-echo "[$SITE_LABEL] 签到前状态: $STATUS_BEFORE"
-
-VERIFY_BEFORE=$(verify_checked_today "$STATUS_BEFORE" || true)
-if [ "$VERIFY_BEFORE" = "checked" ]; then
-    echo "📅 [$SITE_LABEL] 状态接口确认：今日已经签到"
+# 检查是否今日已签到
+CHECKED=$(echo "$STATUS_RESP" | json_get 'data.checked_in_today' 2>/dev/null || echo "false")
+if [ "$CHECKED" = "true" ]; then
+    echo "📅 [$SITE_LABEL] 今日已经签到，跳过"
     log "=== 签到流程结束 ==="
-    rm -f "$COOKIE_FILE"
     exit 0
 fi
 
-if [ -n "$AUTH_HEADER" ]; then
-    CHECKIN_RESP=$(curl_retry -b "$COOKIE_FILE" \
-        -X POST "$SITE/api/user/checkin" \
-        -H "Content-Type: application/json" \
-        -H "Accept: application/json" \
-        -H "New-API-User: $USER_ID" \
-        -H "$AUTH_HEADER")
-else
-    CHECKIN_RESP=$(curl_retry -b "$COOKIE_FILE" \
-        -X POST "$SITE/api/user/checkin" \
-        -H "Content-Type: application/json" \
-        -H "Accept: application/json" \
-        -H "New-API-User: $USER_ID")
-fi
+# Step 3: 开始签到 (POST /api/v1/tbe-sponsor-checkin/normal/begin)
+BEGIN_RESP=$(curl_retry \
+    -X POST "$SITE/api/v1/tbe-sponsor-checkin/normal/begin" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    -H "$AUTH_HEADER" \
+    -d '{"timezone":"Asia/Shanghai"}')
 
-echo "[$SITE_LABEL] 签到响应: $CHECKIN_RESP"
+log "begin 响应: $(echo "$BEGIN_RESP" | head -c 300)"
 
-STATUS_AFTER=$(check_status "$MONTH")
-echo "[$SITE_LABEL] 签到后状态: $STATUS_AFTER"
+CLAIM_TOKEN=$(echo "$BEGIN_RESP" | json_get 'data.token' 2>/dev/null || true)
 
-VERIFY_AFTER=$(verify_checked_today "$STATUS_AFTER" || true)
-if [ "$VERIFY_AFTER" = "checked" ]; then
-    if echo "$CHECKIN_RESP" | grep -q '"success":true'; then
-        echo "🎉 [$SITE_LABEL] 签到成功，并已通过状态接口确认"
-    else
-        echo "📅 [$SITE_LABEL] 今日已签到，并已通过状态接口确认"
+if [ -z "$CLAIM_TOKEN" ]; then
+    # 检查是否已签到
+    MSG=$(echo "$BEGIN_RESP" | json_get 'message' 2>/dev/null || echo "")
+    if echo "$MSG" | grep -qi 'already\|已签\|签到过'; then
+        echo "📅 [$SITE_LABEL] 今日已经签到 (begin 返回已签到)"
+        log "=== 签到流程结束 ==="
+        exit 0
     fi
+    echo "❌ [$SITE_LABEL] begin 失败，未获取到 claim token: $BEGIN_RESP"
+    exit 1
+fi
+
+log "获取到 claim token: ${CLAIM_TOKEN:0:20}..."
+
+# Step 4: 领取签到奖励 (POST /api/v1/tbe-sponsor-checkin/normal/claim)
+CLAIM_RESP=$(curl_retry \
+    -X POST "$SITE/api/v1/tbe-sponsor-checkin/normal/claim" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    -H "$AUTH_HEADER" \
+    -d "{\"token\":\"$CLAIM_TOKEN\",\"timezone\":\"Asia/Shanghai\"}")
+
+log "claim 响应: $(echo "$CLAIM_RESP" | head -c 300)"
+
+CLAIM_SUCCESS=$(echo "$CLAIM_RESP" | json_get 'success' 2>/dev/null || echo "false")
+if [ "$CLAIM_SUCCESS" = "true" ]; then
+    echo "🎉 [$SITE_LABEL] 签到成功！"
     log "=== 签到流程结束 ==="
-    rm -f "$COOKIE_FILE"
     exit 0
 fi
 
-if echo "$CHECKIN_RESP" | grep -qi 'Turnstile'; then
-    echo "❌ [$SITE_LABEL] 签到失败：站点要求 Turnstile，人机验证无法用纯 GitHub Actions curl 绕过"
-else
-    echo "❌ [$SITE_LABEL] 签到失败：接口响应未能让状态变为今日已签到"
+# 再次检查状态确认
+STATUS_AFTER=$(curl_retry \
+    -H "Accept: application/json" \
+    -H "$AUTH_HEADER" \
+    "$SITE/api/v1/tbe-sponsor-checkin/status?timezone=Asia/Shanghai")
+
+CHECKED_AFTER=$(echo "$STATUS_AFTER" | json_get 'data.checked_in_today' 2>/dev/null || echo "false")
+if [ "$CHECKED_AFTER" = "true" ]; then
+    echo "🎉 [$SITE_LABEL] 签到成功（通过状态接口确认）"
+    log "=== 签到流程结束 ==="
+    exit 0
 fi
 
-echo "❌ [$SITE_LABEL] 状态校验结果: $VERIFY_AFTER"
+echo "❌ [$SITE_LABEL] 签到失败：claim 响应未能确认签到成功"
+echo "❌ claim 响应: $CLAIM_RESP"
 rm -f "$COOKIE_FILE"
 exit 1
