@@ -132,6 +132,38 @@ fi
 
 log "获取到 claim token: ${CLAIM_TOKEN:0:20}..."
 
+# Step 3.5: 等待 wait_seconds (begin 返回的倒计时)
+WAIT_SECONDS=$(echo "$BEGIN_RESP" | python3 -c '
+import json, sys
+from datetime import datetime, timezone
+try:
+    data = json.load(sys.stdin).get("data") or {}
+    ws = data.get("wait_seconds")
+    if ws is not None and ws > 0:
+        print(int(ws))
+        sys.exit(0)
+    avail = data.get("available_at")
+    if avail:
+        dt = datetime.fromisoformat(avail.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        diff = int((dt - now).total_seconds())
+        print(max(0, diff))
+        sys.exit(0)
+    print(0)
+except Exception:
+    print(0)
+' 2>/dev/null || echo "0")
+
+if [ "$WAIT_SECONDS" -gt 0 ] 2>/dev/null; then
+    # 最多等 120 秒，防止异常值
+    if [ "$WAIT_SECONDS" -gt 120 ]; then
+        log "等待时间过长 ($WAIT_SECONDS 秒)，跳过"
+        WAIT_SECONDS=10
+    fi
+    log "需要等待 $WAIT_SECONDS 秒后才能 claim..."
+    sleep "$WAIT_SECONDS"
+fi
+
 # Step 4: 领取签到奖励 (POST /api/v1/tbe-sponsor-checkin/normal/claim)
 CLAIM_RESP=$(curl_retry \
     -X POST "$SITE/api/v1/tbe-sponsor-checkin/normal/claim" \
