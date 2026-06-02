@@ -174,9 +174,12 @@ CLAIM_RESP=$(curl_retry \
 
 log "claim 响应: $(echo "$CLAIM_RESP" | head -c 300)"
 
-CLAIM_SUCCESS=$(echo "$CLAIM_RESP" | json_get 'success' 2>/dev/null || echo "false")
-if [ "$CLAIM_SUCCESS" = "true" ]; then
-    echo "🎉 [$SITE_LABEL] 签到成功！"
+CLAIM_SUCCESS=$(echo "$CLAIM_RESP" | json_get 'success' 2>/dev/null || echo "")
+CLAIM_CODE=$(echo "$CLAIM_RESP" | json_get 'code' 2>/dev/null || echo "")
+if [ "$CLAIM_SUCCESS" = "true" ] || [ "$CLAIM_CODE" = "0" ]; then
+    AMOUNT=$(echo "$CLAIM_RESP" | json_get 'data.record.amount' 2>/dev/null || echo "?")
+    BALANCE=$(echo "$CLAIM_RESP" | json_get 'data.new_balance' 2>/dev/null || echo "?")
+    echo "🎉 [$SITE_LABEL] 签到成功！获得 ${AMOUNT} token，余额 ${BALANCE}"
     log "=== 签到流程结束 ==="
     exit 0
 fi
