@@ -29,3 +29,10 @@ jobs:
           CHECKIN_USERNAME2: ${{ secrets.CHECKIN_USERNAME2 }}
           CHECKIN_PASSWORD2: ${{ secrets.CHECKIN_PASSWORD2 }}
         run: bash checkin2.sh
+
+      - name: 签到站点3 (mx.236600.xyz)
+        if: always()
+        env:
+          CHECKIN_USERNAME3: ${{ secrets.CHECKIN_USERNAME3 }}
+          CHECKIN_PASSWORD3: ${{ secrets.CHECKIN_PASSWORD3 }}
+        run: bash checkin3.sh

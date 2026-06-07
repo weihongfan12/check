@@ -1,6 +1,6 @@
 # 自动签到说明
 
-这个仓库通过 GitHub Actions 每天定时执行签到脚本，支持两个 New API 站点。
+这个仓库通过 GitHub Actions 每天定时执行签到脚本，支持三个 New API 站点。
 
 ## 签到站点
 
@@ -8,6 +8,7 @@
 |------|------|------|---------|
 | 站点1 | ai.xem8k5.top | checkin.sh | CHECKIN_USERNAME / CHECKIN_PASSWORD |
 | 站点2 | api.denxio.top | checkin2.sh | CHECKIN_USERNAME2 / CHECKIN_PASSWORD2 |
+| 站点3 | mx.236600.xyz | checkin3.sh | CHECKIN_USERNAME3 / CHECKIN_PASSWORD3 |
 
 ## 触发时间
 
@@ -26,6 +27,8 @@
 - `CHECKIN_PASSWORD` — 站点1 密码
 - `CHECKIN_USERNAME2` — 站点2 登录邮箱
 - `CHECKIN_PASSWORD2` — 站点2 密码
+- `CHECKIN_USERNAME3` — 站点3 登录邮箱
+- `CHECKIN_PASSWORD3` — 站点3 密码
 
 ## 脚本工作流程
 
